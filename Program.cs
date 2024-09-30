@@ -30,15 +30,15 @@ class Program
         using (var audioConfig = AudioConfig.FromDefaultMicrophoneInput())
         using (var conversationTranscriber = new ConversationTranscriber(speechConfig, audioConfig))
         {
-            conversationTranscriber.Transcribing += (s, e) =>
+            conversationTranscriber.Transcribing += async (s, e) =>
             {
                 Console.WriteLine($"TRANSCRIBING: Text={e.Result.Text} Speaker ID={e.Result.SpeakerId}");
 
                 // If guest is speaking and the bot is speaking, stop the bot's speech
-                if (e.Result.SpeakerId == "GuestId" && isBotSpeaking)
+                if (e.Result.SpeakerId == "Guest-1" && isBotSpeaking)
                 {
                     Console.WriteLine("Guest started speaking, stopping bot response...");
-                    StopBotSpeech();
+                    await StopBotSpeechAsync();
                 }
             };
 
@@ -52,6 +52,12 @@ class Program
                     {
                         // Send transcription to Azure OpenAI GPT-4 Mini for chatbot response
                         string response = await GetAzureOpenAIResponseAsync(e.Result.Text);
+
+                        if (isBotSpeaking) {
+                            Console.WriteLine("Guest is finnished speaking, stopping bot response...");
+                            await StopBotSpeechAsync();
+                        }
+
                         Console.WriteLine($"Chatbot Response: {response}");
 
                         // Synthesize the chatbot's text response to speech
@@ -82,7 +88,6 @@ class Program
         }
     }
 
-    // The updated Azure OpenAI Response generation
     public static async Task<string> GetAzureOpenAIResponseAsync(string userInput)
     {
         using (var client = new HttpClient())
@@ -119,33 +124,65 @@ class Program
         }
     }
 
-    // Synthesize the bot's response to speech
     static async Task SynthesizeSpeechAsync(string text)
-    {
+    {   
         var speechConfig = SpeechConfig.FromSubscription(AZURE_SPEECH_KEY, AZURE_REGION);
-
-        // Initialize the speech synthesizer
         botSynthesizer = new SpeechSynthesizer(speechConfig);
+
         isBotSpeaking = true;
 
-        // Speak text asynchronously
-        await botSynthesizer.SpeakTextAsync(text);
+        // Start speaking text asynchronously (no need to pass the token here)
+        var result = await botSynthesizer.SpeakTextAsync(text);
 
-        // After speaking is complete, reset the flag
+        if (result.Reason == ResultReason.SynthesizingAudioCompleted)
+        {
+            Console.WriteLine("Successfully synthesized the speech.");
+        }
+        else
+        {
+            Console.WriteLine($"Speech synthesis failed: {result.Reason}");
+        }
+
         isBotSpeaking = false;
         botSynthesizer.Dispose();
         botSynthesizer = null;
     }
 
-    // Stop the bot's speech when the guest starts speaking
-    static void StopBotSpeech()
+    // Stop the bot's speech if it's currently speaking
+    static async Task StopBotSpeechAsync()
     {
-        // If the bot is currently speaking, stop it
         if (botSynthesizer != null && isBotSpeaking)
         {
-            botSynthesizer.Dispose();  // Disposes the synthesizer to stop speech
-            isBotSpeaking = false;
-            Console.WriteLine("Bot speech stopped.");
+            Console.WriteLine("Stopping bot speech...");
+            
+            try
+            {
+                // Stop the speech asynchronously
+                await botSynthesizer.StopSpeakingAsync();
+
+                // Wait until speech stops completely (ensuring botSynthesizer is no longer speaking)
+                while (isBotSpeaking)
+                {
+                    await Task.Delay(100);
+                }
+
+                Console.WriteLine("Bot speech stopped.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error stopping speech: {ex.Message}");
+            }
+            finally
+            {
+                // Dispose only if not null
+                //botSynthesizer.Dispose();
+                //botSynthesizer = null;
+                isBotSpeaking = false;
+            }
+        }
+        else
+        {
+            Console.WriteLine("Bot is not speaking, or botSynthesizer is null.");
         }
     }
 }
